@@ -1,0 +1,141 @@
+import { EpisodeLink, ProviderContext } from "../types";
+import {
+  enrichCinemetaEpisodes,
+  getCinemetaMeta,
+  readCinemetaContext,
+} from "../getCinemetaMeta";
+
+async function getWithWAF(
+  url: string,
+  axios: any,
+  openWebView: any,
+  headers: any,
+): Promise<any> {
+  const baseUrl = url.split("/").slice(0, 3).join("/");
+  try {
+    return await axios.get(url, { headers: { ...headers, Referer: baseUrl } });
+  } catch (error: any) {
+    if (error.response?.status === 403 && openWebView) {
+      console.log(`WAF detected (403) for ${url}, using solver...`);
+      const wafResult = await openWebView(baseUrl, {
+        title: "Solve the captcha below and click done",
+        description: "Required to bypass anti-bot protection.",
+        headers: { ...headers, Referer: baseUrl },
+        waitForCookie: "cf_clearance",
+        force: true,
+      });
+      return await axios.get(url, {
+        headers: {
+          ...headers,
+          Referer: baseUrl,
+          "User-Agent": wafResult.userAgent || headers["User-Agent"],
+          Cookie: wafResult.cookies || wafResult.cookie,
+        },
+      });
+    }
+    throw error;
+  }
+}
+
+const formatEpisodeTitle = (fileName: string): string => {
+  try {
+    // Match patterns like S03E01, S03E1, s03e01, etc.
+    const match = fileName.match(/S(\d+)E(\d+)/i);
+    if (match) {
+      const season = match[1].padStart(2, "0");
+      const episode = match[2].padStart(2, "0");
+      return `S${season} E${episode}`;
+    }
+    return fileName;
+  } catch {
+    return fileName;
+  }
+};
+
+export const getEpisodes = async function ({
+  url,
+  providerContext,
+}: {
+  url: string;
+  providerContext: ProviderContext;
+}): Promise<EpisodeLink[]> {
+  const {
+    axios,
+    cheerio,
+    commonHeaders: headers,
+    openWebView,
+  } = providerContext;
+  console.log("getEpisodeLinks", url);
+  try {
+    const context = readCinemetaContext(url);
+    const requestUrl = context.requestUrl;
+    const parsedUrl = new URL(requestUrl);
+    const baseUrl = parsedUrl.origin;
+    const id = parsedUrl.pathname.split("/").filter(Boolean).pop() || "";
+    const apiUrl = `${baseUrl}/api/packs/${id}`;
+    console.log("apiUrl:", apiUrl);
+
+    const enrich = async (episodes: EpisodeLink[]): Promise<EpisodeLink[]> => {
+      if (!context.imdbId || !context.season) return episodes;
+      const cinemeta = await getCinemetaMeta(
+        context.imdbId,
+        "series",
+        providerContext,
+      );
+      return enrichCinemetaEpisodes(
+        episodes,
+        cinemeta.videos || [],
+        context.season,
+      );
+    };
+
+    let res;
+    try {
+      res = await getWithWAF(apiUrl, axios, openWebView, headers);
+    } catch (error: any) {
+      // If 404, try alternative API endpoint
+      if (error.response?.status === 404) {
+        const alternativeUrl = `${baseUrl}/api/s/${id}/`;
+        console.log("Trying alternative URL:", alternativeUrl);
+
+        const altRes = await getWithWAF(
+          alternativeUrl,
+          axios,
+          openWebView,
+          headers,
+        );
+
+        // Check if hubcloud is available
+        if (altRes.data?.hasHubcloud) {
+          const hubcloudUrl = `${baseUrl}/api/s/${id}/hubcloud`;
+          return enrich([
+            {
+              title: formatEpisodeTitle(altRes.data.fileName || "Movie"),
+              link: hubcloudUrl,
+            },
+          ]);
+        }
+
+        return [];
+      }
+      throw error;
+    }
+
+    const episodes: EpisodeLink[] = [];
+
+    const items = res.data?.pack?.items || [];
+
+    for (const item of items) {
+      if (item.file_name && item.hubcloud_link) {
+        episodes.push({
+          title: formatEpisodeTitle(item.file_name),
+          link: item.hubcloud_link,
+        });
+      }
+    }
+
+    return enrich(episodes);
+  } catch (err) {
+    throw err;
+  }
+};

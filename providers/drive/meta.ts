@@ -1,0 +1,119 @@
+import { Info, Link, ProviderContext } from "../types";
+import { getBaseUrl } from "../getBaseUrl";
+import { throwProviderError } from "../providerErrors";
+import {
+  addCinemetaContext,
+  applyCinemetaMeta,
+  getCinemetaMeta,
+  getCinemetaSeason,
+} from "../getCinemetaMeta";
+
+export const getMeta = async function ({
+  link,
+  providerContext,
+}: {
+  link: string;
+  providerContext: ProviderContext;
+}): Promise<Info> {
+  try {
+    const { axios, cheerio } = providerContext;
+    const currentBaseUrl = await getBaseUrl("drive");
+    const url = new URL(link, `${currentBaseUrl}/`).href;
+    const res = await axios.get(url);
+    const data = res.data;
+    const $ = cheerio.load(data);
+    const type = $(".left-wrapper")
+      .text()
+      .toLocaleLowerCase()
+      .includes("movie name")
+      ? "movie"
+      : "series";
+    const imdbId = $('a:contains("IMDb")').attr("href")?.split("/")[4] || "";
+    const title =
+      $(".left-wrapper").find('strong:contains("Name")').next().text() ||
+      $(".left-wrapper")
+        .find('strong:contains("Name"),h5:contains("Name")')
+        .find("span:first")
+        .text();
+    const synopsis =
+      $(".left-wrapper")
+        .find(
+          'h2:contains("Storyline"),h3:contains("Storyline"),h5:contains("Storyline"),h4:contains("Storyline"),h4:contains("STORYLINE")',
+        )
+        .next()
+        .text() ||
+      $(".ipc-html-content-inner-div").text() ||
+      "";
+    const image =
+      $("img.entered.lazyloaded,img.entered,img.litespeed-loaded").attr(
+        "src",
+      ) ||
+      $("img.aligncenter").attr("src") ||
+      "";
+
+    // Links
+    const links: Link[] = [];
+
+    $(
+      'a:contains("1080")a:not(:contains("Zip")),a:contains("720")a:not(:contains("Zip")),a:contains("480")a:not(:contains("Zip")),a:contains("2160")a:not(:contains("Zip")),a:contains("4k")a:not(:contains("Zip"))',
+    ).map((i: number, element: any) => {
+      let linkTitle = $(element).parent("h5").prev().text();
+      const episodesLink = $(element).attr("href");
+      const quality =
+        linkTitle.match(/\b(480p|720p|1080p|2160p)\b/i)?.[0] || "";
+
+      if (type === "series") {
+        const seasonMatch = linkTitle.match(/Season\s*\d+/i);
+        if (seasonMatch) {
+          linkTitle = seasonMatch[0];
+        }
+      }
+
+      if (episodesLink && linkTitle) {
+        const linkObj: Link = {
+          title: linkTitle,
+          quality: quality,
+        };
+        if (type === "movie") {
+          linkObj.directLinks = [{ title: "Movie", link: episodesLink, type: "movie" }];
+        } else {
+          linkObj.episodesLink = episodesLink;
+        }
+        links.push(linkObj);
+      }
+    });
+
+    // console.log('drive meta', title, synopsis, image, imdbId, type, links);
+    console.log("drive meta", links, type);
+    const websiteInfo: Info = {
+      title,
+      synopsis,
+      image,
+      imdbId: "",
+      type,
+      linkList: links,
+      webUrl: url,
+    };
+    if (!imdbId) return websiteInfo;
+
+    const cinemeta = await getCinemetaMeta(imdbId, type, providerContext);
+    if (type === "series" && cinemeta.type === "series") {
+      websiteInfo.linkList = websiteInfo.linkList.map((item) => {
+        if (!item.episodesLink) return item;
+        const season = getCinemetaSeason(item.title);
+        if (!season) return item;
+        return {
+          ...item,
+          episodesLink: addCinemetaContext(
+            new URL(item.episodesLink, url).href,
+            imdbId,
+            season,
+          ),
+        };
+      });
+    }
+    return applyCinemetaMeta(websiteInfo, cinemeta);
+  } catch (err) {
+    throwProviderError("Drive", "metadata", err);
+  }
+};
