@@ -355,3 +355,99 @@ This gives you flexibility to support both providers that need extra requests fo
 This workflow allows you to quickly test and debug new providers before deploying them.
 
 Follow this structure and naming convention to ensure your provider integrates smoothly with the project.
+
+## Vercel Streams API
+
+This repository can also deploy a Node.js Vercel Function at `POST /api/streams`. Vercel discovers the TypeScript route in `api/streams.ts`; it is a Node.js function, not an Edge Function. The first serverless-enabled provider is `movieBoxWeb`. It resolves titles and years through provider search because its metadata does not expose TMDB or IMDb IDs. Other providers are denied unless they are explicitly added to the route's static allowlist. Providers that require CAPTCHA, `openWebView`, or browser interaction are not supported in serverless.
+
+### Deploy
+
+1. Import the repository into Vercel and select the repository root as the project root.
+2. Keep the Node.js runtime selected in Vercel project settings. No API secrets or environment variables are currently required; provider base URLs are read by the existing provider implementation.
+3. Deploy. `api/streams.ts` sets a 30-second Vercel function duration cap and returns a 504 response after its 25-second request deadline.
+
+The function only returns stream metadata, playback links, playback headers, and subtitles. It does not proxy or download video. The request schema does not accept a destination URL.
+
+### Request and response
+
+```json
+{
+  "provider": "movieBoxWeb",
+  "tmdbId": "123456",
+  "imdbId": "tt1234567",
+  "title": "Example Film",
+  "year": 2024,
+  "mediaType": "movie"
+}
+```
+
+For series, `mediaType` is `"series"` and both `season` and `episode` are required. `tmdbId`, `imdbId`, and `year` are optional. IDs are used if the selected provider returns them; otherwise the API requires a title/year match and rejects ambiguous matches.
+
+```json
+{
+  "provider": "movieBoxWeb",
+  "streams": [
+    {
+      "server": "Original 1080",
+      "link": "https://example.invalid/video.m3u8",
+      "type": "m3u8",
+      "quality": "1080",
+      "headers": { "Referer": "https://example.invalid/" },
+      "subtitles": []
+    }
+  ]
+}
+```
+
+Errors use `{ "error": { "code": "...", "message": "..." } }`. Statuses include 400 for invalid JSON/input, 403 for providers outside the allowlist, 404 for no match, 409 for ambiguous matches, 501 for known serverless-incompatible providers, 502 for provider failures, and 504 for timeout. An empty source list is a successful 200 response.
+
+### cURL
+
+```sh
+curl --request POST "https://YOUR_PROJECT.vercel.app/api/streams" \
+  --header "Content-Type: application/json" \
+  --data '{"provider":"movieBoxWeb","title":"Example Film","year":2024,"mediaType":"movie"}'
+```
+
+### Retrofit DTO
+
+```kotlin
+data class StreamsRequest(
+    val provider: String,
+    val title: String,
+    val mediaType: String,
+    val year: Int? = null,
+    val tmdbId: String? = null,
+    val imdbId: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+)
+
+data class StreamsResponse(
+    val provider: String,
+    val streams: List<StreamSourceDto>,
+)
+
+data class StreamSourceDto(
+    val server: String,
+    val link: String,
+    val type: String,
+    val quality: String,
+    val headers: Map<String, String>,
+    val subtitles: List<SubtitleDto>,
+)
+
+data class SubtitleDto(
+    val title: String,
+    val language: String,
+    val type: String,
+    val uri: String,
+)
+
+interface StreamsApi {
+    @POST("api/streams")
+    suspend fun getStreams(@Body request: StreamsRequest): StreamsResponse
+}
+```
+
+Run the mocked endpoint tests locally with `npm run test:api`.

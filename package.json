@@ -9,6 +9,7 @@
   "scripts": {
     "test": "node tests/test-providers.js",
     "test:provider": "node tests/test-provider.js",
+    "test:api": "tsx --test tests/api-streams.test.ts",
     "build": "node build-bundled.js",
     "build:dev": "cross-env SKIP_MINIFY=true node build-bundled.js",
     "dev": "node dev-server.js",
@@ -27,8 +28,9 @@
     "cross-env": "^7.0.3",
     "esbuild": "^0.27.2",
     "express": "^4.21.2",
-    "nodemon": "^3.1.10",
+    "nodemon": "^3.1.14",
     "terser": "^5.43.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.3"
   },
   "dependencies": {
@@ -36,5 +38,10 @@
     "cheerio": "^1.1.0",
     "rimraf": "^6.0.1",
     "zod": "^4.0.2"
+  },
+  "overrides": {
+    "nodemon": {
+      "chokidar": "^4.0.3"
+    }
   }
 }
